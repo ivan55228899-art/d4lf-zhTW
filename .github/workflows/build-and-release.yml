@@ -1,0 +1,264 @@
+name: Build & Release zhTW
+
+# When does this run?
+#   - Daily at 03:00 UTC (= 11:00 Taipei time): checks D4Companion + upstream d4lf for updates
+#   - On push to main: rebuilds with current state
+#   - Manually via the "Run workflow" button in the Actions tab
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - ".github/**"
+  workflow_dispatch:
+    inputs:
+      force_release:
+        description: "Force a release even if no changes detected"
+        type: boolean
+        default: false
+
+# Environment variables — edit these once after forking, never again
+env:
+  # The fork's GitHub owner/repo. The autoupdater is patched at build time to
+  # read from THIS repo's releases instead of upstream d4lfteam/d4lf.
+  # Default uses ${{ github.repository_owner }} which auto-resolves to your username.
+  D4LF_REPO_OWNER: ${{ github.repository_owner }}
+  D4LF_REPO_NAME: ${{ github.event.repository.name }}
+  # Upstream tracking
+  UPSTREAM_REPO: d4lfteam/d4lf
+  D4COMPANION_REPO: josdemmers/Diablo4Companion
+
+permissions:
+  contents: write  # needed to push commits, create tags & releases
+
+jobs:
+  # -----------------------------------------------------------------------------
+  # Job 1: Sync from upstream + regenerate zhTW assets
+  # -----------------------------------------------------------------------------
+  sync-and-generate:
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.detect-changes.outputs.changed }}
+      upstream_version: ${{ steps.version.outputs.upstream }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history for merging
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Try to merge upstream changes
+        id: merge-upstream
+        continue-on-error: true
+        run: |
+          git remote add upstream https://github.com/${{ env.UPSTREAM_REPO }}.git || true
+          git fetch upstream main
+          # Attempt fast-forward merge; if conflicts, abort and continue (manual intervention needed)
+          if git merge --no-edit upstream/main; then
+            echo "Upstream merge successful"
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Upstream merge had conflicts — aborting and continuing without sync"
+            git merge --abort || true
+            echo "merged=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read upstream version
+        id: version
+        run: |
+          UV=$(grep -oP '__version__\s*=\s*"\K[^"]+' src/__init__.py)
+          echo "upstream=${UV}" >> "$GITHUB_OUTPUT"
+          echo "Upstream version is ${UV}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"  # generator only needs basics, not the full d4lf stack
+
+      - name: Sparse-clone D4Companion (data files only)
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/${{ env.D4COMPANION_REPO }}.git /tmp/d4companion
+          cd /tmp/d4companion
+          git sparse-checkout set "D4Companion/Data"
+
+      - name: Regenerate zhTW assets
+        run: |
+          python src/tools/gen_data_zhTW.py /tmp/d4companion
+
+      - name: Detect asset changes
+        id: detect-changes
+        run: |
+          if [ -n "$(git status --porcelain assets/lang/zhTW/)" ] || \
+             [ "${{ steps.merge-upstream.outputs.merged }}" = "true" ] || \
+             [ "${{ inputs.force_release }}" = "true" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "✓ Changes detected — will trigger build"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "○ No changes — skipping build"
+          fi
+
+      - name: Commit regenerated assets
+        if: steps.detect-changes.outputs.changed == 'true'
+        run: |
+          git add assets/lang/zhTW/ src/__init__.py 2>/dev/null || true
+          if [ -n "$(git status --porcelain)" ]; then
+            # Build commit message describing what changed
+            MSG="chore: auto-sync zhTW assets"
+            if [ "${{ steps.merge-upstream.outputs.merged }}" = "true" ]; then
+              MSG="$MSG + upstream merge (now at v${{ steps.version.outputs.upstream }})"
+            fi
+            git commit -m "$MSG"
+            git push origin main
+          else
+            # Only upstream merge happened, no asset changes — push the merge
+            if [ "${{ steps.merge-upstream.outputs.merged }}" = "true" ]; then
+              git push origin main
+            fi
+          fi
+
+  # -----------------------------------------------------------------------------
+  # Job 2: Build Windows .exe and create a GitHub release
+  # -----------------------------------------------------------------------------
+  build-and-release:
+    needs: sync-and-generate
+    if: needs.sync-and-generate.outputs.changed == 'true'
+    runs-on: windows-latest
+    steps:
+      - name: Checkout (post-sync)
+        uses: actions/checkout@v4
+        with:
+          ref: main  # pull the just-pushed commit
+
+      - name: Set up Python 3.14
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Compute release tag
+        id: tag
+        shell: bash
+        run: |
+          UV="${{ needs.sync-and-generate.outputs.upstream_version }}"
+          TAG="v${UV}-zh.${{ github.run_number }}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version_for_init=${UV}-zh.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Bake fork repo info into autoupdater
+        shell: bash
+        run: |
+          # The CI markers in src/autoupdater.py are line-anchored constants. We replace
+          # the literal default values with the fork's actual owner/name. After this
+          # patch the bundled exe will pull updates from THIS fork.
+          python - <<'PY'
+          import re, pathlib, os
+          p = pathlib.Path("src/autoupdater.py")
+          s = p.read_text(encoding="utf-8")
+          owner = os.environ["D4LF_REPO_OWNER"]
+          name  = os.environ["D4LF_REPO_NAME"]
+          s = re.sub(r'REPO_OWNER\s*=\s*"[^"]*"\s*#\s*CI_REPO_OWNER_MARKER',
+                     f'REPO_OWNER = "{owner}"  # CI_REPO_OWNER_MARKER', s)
+          s = re.sub(r'REPO_NAME\s*=\s*"[^"]*"\s*#\s*CI_REPO_NAME_MARKER',
+                     f'REPO_NAME = "{name}"  # CI_REPO_NAME_MARKER', s)
+          p.write_text(s, encoding="utf-8")
+          print(f"Patched autoupdater -> {owner}/{name}")
+          PY
+
+      - name: Bump __version__ to include zhTW iteration
+        shell: bash
+        run: |
+          python - <<'PY'
+          import re, pathlib
+          p = pathlib.Path("src/__init__.py")
+          s = p.read_text(encoding="utf-8")
+          new_v = "${{ steps.tag.outputs.version_for_init }}"
+          s = re.sub(r'__version__\s*=\s*"[^"]+"', f'__version__ = "{new_v}"', s)
+          p.write_text(s, encoding="utf-8")
+          print(f"Set __version__ = {new_v}")
+          PY
+
+      - name: Install dependencies via uv
+        run: uv sync
+
+      - name: Run tests (best-effort, do not block release)
+        continue-on-error: true
+        run: uv run pytest tests/ -x --timeout=60 -q
+
+      - name: Build with PyInstaller
+        run: uv run python build.py
+
+      - name: Package release zip
+        shell: pwsh
+        run: |
+          $tag = "${{ steps.tag.outputs.tag }}"
+          $zipName = "d4lf_zhTW_${tag}.zip"
+          # build.py outputs everything into a `d4lf/` directory
+          Compress-Archive -Path d4lf/* -DestinationPath $zipName
+          echo "ZIP_PATH=$zipName" >> $env:GITHUB_ENV
+
+      - name: Generate release notes
+        id: notes
+        shell: bash
+        run: |
+          {
+            echo "## d4lf 繁體中文版 ${{ steps.tag.outputs.tag }}"
+            echo ""
+            echo "**上游版本**: v${{ needs.sync-and-generate.outputs.upstream_version }}"
+            echo "**建置時間**: $(date -u +'%Y-%m-%d %H:%M UTC')"
+            echo ""
+            echo "### 安裝方式"
+            echo "1. 下載下方 \`d4lf_zhTW_${{ steps.tag.outputs.tag }}.zip\`"
+            echo "2. 解壓到任意資料夾"
+            echo "3. 把 \`saapi64.dll\` 複製到 Diablo IV 安裝目錄,執行 \`sign_dll.ps1\` 簽署"
+            echo "4. 確認 D4 客戶端設成繁體中文"
+            echo "5. 執行 \`d4lf.exe\`"
+            echo ""
+            echo "### 自動更新"
+            echo "本版起 d4lf 內建的自動更新會從本 repo 拉新版,不會跑去抓上游英文版。"
+            echo "字典與上游程式碼每天 UTC 03:00 自動同步。"
+            echo ""
+            echo "詳細說明見 [README_zhTW.md](https://github.com/${{ github.repository }}/blob/main/README_zhTW.md)。"
+          } > release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          body_path: release_notes.md
+          files: ${{ env.ZIP_PATH }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Cleanup old releases (keep latest 10)
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Keep the 10 most recent releases and delete the rest.
+          # Old zip artifacts can rack up storage; this caps it.
+          gh release list --limit 100 --json tagName,createdAt \
+            | python -c "
+          import sys, json
+          rels = json.load(sys.stdin)
+          rels.sort(key=lambda r: r['createdAt'], reverse=True)
+          for r in rels[10:]:
+              print(r['tagName'])
+          " | while read tag; do
+            echo "Deleting old release: $tag"
+            gh release delete "$tag" --yes --cleanup-tag || true
+          done

@@ -1,0 +1,78 @@
+from typing import TYPE_CHECKING, Any
+
+import pytest
+from pydantic import ValidationError
+
+from src.config.models import GeneralModel, ProfileModel
+from tests.config.data import sigils, uniques
+
+if TYPE_CHECKING:
+    from src.config.loader import IniConfigLoader
+
+
+class TestSigil:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mock_ini_loader: IniConfigLoader) -> None:
+        self.mock_ini_loader = mock_ini_loader
+
+    @staticmethod
+    @pytest.mark.parametrize("data", sigils.all_bad_cases)
+    def test_all_bad_cases(data: dict[str, Any]) -> None:
+        data["name"] = "bad"
+        with pytest.raises(ValidationError):
+            ProfileModel(**data)
+
+    @staticmethod
+    @pytest.mark.parametrize("data", sigils.all_good_cases)
+    def test_all_good_cases(data: dict[str, Any]) -> None:
+        data["name"] = "good"
+        assert ProfileModel(**data)
+
+
+class TestUnique:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mock_ini_loader: IniConfigLoader) -> None:
+        self.mock_ini_loader = mock_ini_loader
+
+    @staticmethod
+    @pytest.mark.parametrize("data", uniques.all_bad_cases)
+    def test_all_bad_cases(data: dict[str, Any]) -> None:
+        data["name"] = "bad"
+        with pytest.raises(ValidationError):
+            ProfileModel(**data)
+
+    @staticmethod
+    def test_all_good_cases() -> None:
+        assert ProfileModel(**uniques.all_good_cases)
+
+
+class TestAffixPercent:
+    @pytest.fixture(autouse=True)
+    def _setup(self, mock_ini_loader: IniConfigLoader) -> None:
+        self.mock_ini_loader = mock_ini_loader
+
+    @staticmethod
+    def test_affix_percent_zero_is_allowed() -> None:
+        assert ProfileModel(name="good", Uniques=[{"affix": [{"name": "maximum_life", "minPercentOfAffix": 0}]}])
+
+    @staticmethod
+    def test_affix_percent_is_allowed() -> None:
+        assert ProfileModel(name="good", Uniques=[{"affix": [{"name": "maximum_life", "minPercentOfAffix": 80}]}])
+
+    @staticmethod
+    def test_affix_percent_negative_values_are_rejected() -> None:
+        with pytest.raises(ValidationError, match=r"must be in \[0, 100\]"):
+            ProfileModel(name="bad", Uniques=[{"affix": [{"name": "maximum_life", "minPercentOfAffix": -1}]}])
+
+    @staticmethod
+    def test_affix_percent_and_value_are_mutually_exclusive() -> None:
+        with pytest.raises(ValidationError, match="value and minPercentOfAffix cannot both be set"):
+            ProfileModel(
+                name="bad", Uniques=[{"affix": [{"name": "maximum_life", "value": 450, "minPercentOfAffix": 80}]}]
+            )
+
+
+class TestGeneralProfiles:
+    @staticmethod
+    def test_profiles_empty_entries_are_removed() -> None:
+        assert GeneralModel(profiles="alpha, , beta,   ,").profiles == ["alpha", "beta"]

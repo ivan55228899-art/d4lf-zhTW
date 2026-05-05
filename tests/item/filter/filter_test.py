@@ -1,0 +1,132 @@
+from __future__ import annotations
+
+import typing
+
+import pytest
+from natsort import natsorted
+
+from src.config.loader import IniConfigLoader
+from src.config.models import GeneralModel, JunkRaresType, SigilPriority
+from src.item.filter import Filter, FilterResult
+from src.scripts.common import is_junk_rarity
+from tests.item.filter.data import filters
+from tests.item.filter.data.affixes import affixes
+from tests.item.filter.data.aspects import aspects
+from tests.item.filter.data.items import four_affix_rare, three_affix_rare
+from tests.item.filter.data.sigils import sigil_jalal, sigil_priority, sigils
+from tests.item.filter.data.tributes import tributes
+from tests.item.filter.data.uniques import aspect_only_mythic_tests, simple_mythics, uniques
+
+if typing.TYPE_CHECKING:
+    from pytest_mock import MockerFixture
+
+    from src.item.models import Item
+
+
+def _create_mocked_filter(mocker: MockerFixture) -> Filter:
+    filter_obj = Filter()
+    filter_obj.files_loaded = True
+    mocker.patch.object(filter_obj, "_did_files_change", return_value=False)
+    return filter_obj
+
+
+@pytest.mark.parametrize(
+    ("_name", "result", "item"), natsorted(affixes), ids=[name for name, _, _ in natsorted(affixes)]
+)
+def test_affixes(_name: str, result: list[str], item: Item, mocker: MockerFixture):
+    test_filter = _create_mocked_filter(mocker)
+    test_filter.affix_filters = {filters.affix.name: filters.affix.Affixes}
+    assert natsorted([match.profile for match in test_filter.should_keep(item).matched]) == natsorted(result)
+
+
+@pytest.mark.parametrize(
+    ("_name", "result", "item"), natsorted(aspects), ids=[name for name, _, _ in natsorted(aspects)]
+)
+def test_aspects(_name: str, result: list[str], item: Item, mocker: MockerFixture):
+    test_filter = _create_mocked_filter(mocker)
+    mocker.patch.object(test_filter, "_check_affixes", return_value=FilterResult(keep=False, matched=[]))
+    test_filter.aspect_upgrade_filters = {filters.aspects_filters.name: filters.aspects_filters.AspectUpgrades}
+    assert natsorted([match.profile for match in test_filter.should_keep(item).matched]) == natsorted(result)
+
+
+@pytest.mark.parametrize(("_name", "result", "item"), natsorted(sigils), ids=[name for name, _, _ in natsorted(sigils)])
+def test_sigils(_name: str, result: list[str], item: Item, mocker: MockerFixture):
+    test_filter = _create_mocked_filter(mocker)
+    test_filter.sigil_filters = {filters.sigil.name: filters.sigil.Sigils}
+    assert natsorted([match.profile.split(".")[0] for match in test_filter.should_keep(item).matched]) == natsorted(
+        result
+    )
+
+
+def test_sigil_empty_lists(mocker: MockerFixture):
+    test_filter = _create_mocked_filter(mocker)
+    test_filter.sigil_filters = {filters.sigil_whitelist_only.name: filters.sigil_whitelist_only.Sigils}
+    assert test_filter.should_keep(sigil_jalal).matched == []
+    assert test_filter.should_keep(sigil_priority).matched[0].profile == filters.sigil_whitelist_only.name
+    test_filter = _create_mocked_filter(mocker)
+    test_filter.sigil_filters = {filters.sigil_blacklist_only.name: filters.sigil_blacklist_only.Sigils}
+    assert test_filter.should_keep(sigil_jalal).matched[0].profile == filters.sigil_blacklist_only.name
+    assert test_filter.should_keep(sigil_priority).matched == []
+
+
+def test_sigil_priority(mocker: MockerFixture):
+    test_filter = _create_mocked_filter(mocker)
+    test_filter.sigil_filters = {filters.sigil_priority.name: filters.sigil_priority.Sigils}
+    assert test_filter.should_keep(sigil_priority).matched == []
+    test_filter.sigil_filters[next(iter(test_filter.sigil_filters))].priority = SigilPriority.whitelist
+    assert test_filter.should_keep(sigil_priority).matched[0].profile == filters.sigil_priority.name
+
+
+@pytest.mark.parametrize(
+    ("_name", "result", "item"), natsorted(tributes), ids=[name for name, _, _ in natsorted(tributes)]
+)
+def test_tributes(_name: str, result: list[str], item: Item, mocker: MockerFixture):
+    test_filter = _create_mocked_filter(mocker)
+    test_filter.tribute_filters = {filters.tributes.name: filters.tributes.Tributes}
+    assert natsorted([match.profile for match in test_filter.should_keep(item).matched]) == natsorted(result)
+
+
+@pytest.mark.parametrize(
+    ("_name", "result", "item"), natsorted(uniques), ids=[name for name, _, _ in natsorted(uniques)]
+)
+def test_uniques(_name: str, result: list[str], item: Item, mocker: MockerFixture):
+    test_filter = _create_mocked_filter(mocker)
+    test_filter.unique_filters = {filters.unique.name: filters.unique.Uniques}
+    assert natsorted([match.profile for match in test_filter.should_keep(item).matched]) == natsorted(result)
+
+
+@pytest.mark.parametrize(
+    ("_name", "result", "item"), natsorted(simple_mythics), ids=[name for name, _, _ in natsorted(simple_mythics)]
+)
+def test_mythic_always_kept(_name: str, result: bool, item: Item, mocker: MockerFixture):
+    test_filter = _create_mocked_filter(mocker)
+    test_filter.unique_filters = {filters.always_keep_mythics.name: filters.always_keep_mythics.Uniques}
+    assert test_filter.should_keep(item).keep == result
+
+
+@pytest.mark.parametrize(
+    ("_name", "should_keep", "matched", "item"),
+    natsorted(aspect_only_mythic_tests),
+    ids=[name for name, _, _, _ in natsorted(aspect_only_mythic_tests)],
+)
+def test_unfiltered_unique_is_kept(
+    _name: str, should_keep: bool, matched: list[str], item: Item, mocker: MockerFixture
+):
+    test_filter = _create_mocked_filter(mocker)
+    test_filter.unique_filters = {filters.aspect_only_unique_filters.name: filters.aspect_only_unique_filters.Uniques}
+    test_filter_result = test_filter.should_keep(item)
+    assert natsorted([match.profile for match in test_filter_result.matched]) == natsorted(matched)
+    assert test_filter_result.keep == should_keep
+
+
+def test_three_affix_rares_are_junked_without_affecting_four_affix_rares(mocker: MockerFixture):
+    loader = IniConfigLoader()
+    mocker.patch.object(loader, "_general", new=GeneralModel(junk_rares=JunkRaresType.three_affixes))
+    mocker.patch.object(loader, "reload_if_changed", return_value=False)
+
+    test_filter = _create_mocked_filter(mocker)
+
+    assert is_junk_rarity(three_affix_rare) is True
+    assert is_junk_rarity(four_affix_rare) is False
+    assert test_filter.should_keep(three_affix_rare).keep is False
+    assert test_filter.should_keep(four_affix_rare).keep is True

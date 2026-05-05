@@ -1,0 +1,11 @@
+{
+    "bad_tts_uniques": {},
+    "error_map": {},
+    "filter_after_keyword": [
+        "需要等級",
+        "需要世界",
+        "空插槽",
+        "出售價值"
+    ],
+    "filter_words": []
+}

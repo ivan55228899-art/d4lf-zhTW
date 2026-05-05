@@ -1,0 +1,88 @@
+--- d4lf/src/config/models.py	2026-05-05 03:16:58.735841873 +0000
++++ d4lf-zhTW-fork/src/config/models.py	2026-05-05 03:30:31.052138591 +0000
+@@ -374,7 +374,7 @@
+     )
+     language: str = Field(
+         default="enUS",
+-        description="Do not change. Only English is supported at this time",
++        description="Language for asset matching. Must match your Diablo IV client language. Supported: enUS, zhTW",
+         json_schema_extra={HIDE_FROM_GUI_KEY: "True", LIVE_RELOAD_GROUP_KEY: "language"},
+     )
+     mark_as_favorite: bool = Field(default=True, description="Whether to favorite matched items or not")
+@@ -461,8 +461,8 @@
+ 
+     @field_validator("language")
+     def language_must_exist(cls, v: str) -> str:
+-        if v not in ["enUS"]:
+-            msg = "language not supported"
++        if v not in ["enUS", "zhTW"]:
++            msg = "language not supported (allowed: enUS, zhTW)"
+             raise ValueError(msg)
+         return v
+ 
+--- d4lf/src/item/descr/text.py	2026-05-05 03:16:58.744008322 +0000
++++ d4lf-zhTW-fork/src/item/descr/text.py	2026-05-05 03:34:03.939328526 +0000
+@@ -7,11 +7,41 @@
+ 
+ 
+ def closest_match(target, candidates):
++    """Find the closest matching candidate key for a target string.
++
++    Match strategy (in order):
++      1. Exact normalized match against keys — handles importers that send English
++         affix names while the language is set to a non-English locale (keys are
++         always English snake_case identifiers regardless of language).
++      2. Fuzzy match against values — original behavior, used by TTS matching where
++         the spoken text is in the user's game language.
++      3. Fuzzy match against key-as-phrase (underscores -> spaces) with a tighter
++         cutoff — final fallback for partial/dirty English input.
++    """
+     keys, values = zip(*candidates.items(), strict=False)
++
++    # Step 1: exact normalized key match (cheap, language-agnostic)
++    if target:
++        normalized = target.strip().lower().replace(" ", "_")
++        if normalized in keys:
++            return normalized
++
++    # Step 2: original fuzzy match against values
+     result = rapidfuzz.process.extractOne(
+         target, values, scorer=rapidfuzz.distance.Levenshtein.distance, score_cutoff=100
+     )
+-    return keys[values.index(result[0])] if result else None
++    if result:
++        return keys[values.index(result[0])]
++
++    # Step 3: fuzzy match against keys-as-phrases (tighter cutoff to avoid noise)
++    keys_as_phrases = [k.replace("_", " ") for k in keys]
++    result = rapidfuzz.process.extractOne(
++        target, keys_as_phrases, scorer=rapidfuzz.distance.Levenshtein.distance, score_cutoff=5
++    )
++    if result:
++        return keys[keys_as_phrases.index(result[0])]
++
++    return None
+ 
+ 
+ def closest_to(value, choices):
+--- d4lf/src/autoupdater.py	2026-05-05 03:16:58.735345559 +0000
++++ d4lf-zhTW-fork/src/autoupdater.py	2026-05-05 03:40:29.703934808 +0000
+@@ -15,9 +15,16 @@
+ 
+ # This autoupdater was almost entirely provided by iAmPilcrow
+ class D4LFUpdater:
++    # NOTE FOR FORK MAINTAINERS: the CI workflow at .github/workflows/build-and-release.yml
++    # rewrites these two lines via sed before each build, so that the bundled exe pulls
++    # updates from YOUR fork's releases instead of upstream's. Just edit the workflow's
++    # `D4LF_REPO_OWNER` / `D4LF_REPO_NAME` env vars and CI will keep these in sync.
++    REPO_OWNER = "d4lfteam"  # CI_REPO_OWNER_MARKER
++    REPO_NAME = "d4lf"  # CI_REPO_NAME_MARKER
++
+     def __init__(self):
+-        self.repo_owner = "d4lfteam"
+-        self.repo_name = "d4lf"
++        self.repo_owner = self.REPO_OWNER
++        self.repo_name = self.REPO_NAME
+         self.api_url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/releases/latest"
+         self.changes_base_url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/compare/"
+         self.current_dir = Path.cwd()

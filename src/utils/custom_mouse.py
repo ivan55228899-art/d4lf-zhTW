@@ -1,0 +1,229 @@
+# Mostly copied from: https://github.com/patrikoss/pyclick
+import math
+import random
+import time
+
+import mouse as _mouse
+import numpy as np
+import pytweening
+
+
+def isNumeric(val):
+    return isinstance(val, float | int | np.int32 | np.int64 | np.float32 | np.float64)
+
+
+def is_list_of_points(value):
+    def is_point(p):
+        return len(p) == 2 and isNumeric(p[0]) and isNumeric(p[1])
+
+    if not isinstance(value, list):
+        return False
+    try:
+        return all(map(is_point, value))
+    except KeyError, TypeError:
+        return False
+
+
+class BezierCurve:
+    @staticmethod
+    def binomial(n, k):
+        """Returns the binomial coefficient: n choose k."""
+        return math.factorial(n) / float(math.factorial(k) * math.factorial(n - k))
+
+    @staticmethod
+    def bernsteinPolynomialPoint(x, i, n):
+        """Calculate the i-th component of a bernstein polynomial of degree n."""
+        return BezierCurve.binomial(n, i) * (x**i) * ((1 - x) ** (n - i))
+
+    @staticmethod
+    def bernsteinPolynomial(points):
+        """Given list of control points, returns a function, which given a point [0,1] returns a point in the bezier curve described by these points."""
+
+        def bern(t):
+            n = len(points) - 1
+            x = y = 0
+            for i, point in enumerate(points):
+                bern = BezierCurve.bernsteinPolynomialPoint(t, i, n)
+                x += point[0] * bern
+                y += point[1] * bern
+            return x, y
+
+        return bern
+
+    @staticmethod
+    def curvePoints(n, points):
+        """Given list of control points, returns n points in the bezier curve, described by these points."""
+        curvePoints = []
+        bernstein_polynomial = BezierCurve.bernsteinPolynomial(points)
+        for i in range(n):
+            t = i / (n - 1)
+            curvePoints += (bernstein_polynomial(t),)
+        return curvePoints
+
+
+class HumanCurve:
+    """Generates a human-like mouse curve starting at given source point, and finishing in a given destination point."""
+
+    def __init__(self, fromPoint, toPoint, **kwargs):
+        self.fromPoint = fromPoint
+        self.toPoint = toPoint
+        self.points = self.generateCurve(**kwargs)
+
+    def generateCurve(self, **kwargs):
+        """Generates a curve according to the parameters specified below.
+
+        You can override any of the below parameters. If no parameter is
+        passed, the default value is used.
+        """
+        offsetBoundaryX = kwargs.get("offsetBoundaryX", 100)
+        offsetBoundaryY = kwargs.get("offsetBoundaryY", 100)
+        leftBoundary = kwargs.get("leftBoundary", min(self.fromPoint[0], self.toPoint[0])) - offsetBoundaryX
+        rightBoundary = kwargs.get("rightBoundary", max(self.fromPoint[0], self.toPoint[0])) + offsetBoundaryX
+        downBoundary = kwargs.get("downBoundary", min(self.fromPoint[1], self.toPoint[1])) - offsetBoundaryY
+        upBoundary = kwargs.get("upBoundary", max(self.fromPoint[1], self.toPoint[1])) + offsetBoundaryY
+        knotsCount = kwargs.get("knotsCount", 2)
+        distortionMean = kwargs.get("distortionMean", 1)
+        distortionStdev = kwargs.get("distortionStdev", 1)
+        distortionFrequency = kwargs.get("distortionFrequency", 0.4)
+        tween = kwargs.get("tweening", pytweening.easeOutQuad)
+        targetPoints = kwargs.get("targetPoints", 10)
+
+        internalKnots = self.generateInternalKnots(leftBoundary, rightBoundary, downBoundary, upBoundary, knotsCount)
+        points = self.generatePoints(internalKnots)
+        points = self.distortPoints(points, distortionMean, distortionStdev, distortionFrequency)
+        return self.tweenPoints(points, tween, targetPoints)
+
+    def generateInternalKnots(self, leftBoundary, rightBoundary, downBoundary, upBoundary, knotsCount):
+        """Generates the internal knots used during generation of bezier curvePoints.
+
+        or any interpolation function. The points are taken at random from
+        a surface delimited by given boundaries.
+        Exactly knotsCount internal knots are randomly generated.
+        """
+        if not (
+            isNumeric(leftBoundary) and isNumeric(rightBoundary) and isNumeric(downBoundary) and isNumeric(upBoundary)
+        ):
+            msg = "Boundaries must be numeric"
+            raise ValueError(msg)
+        if not isinstance(knotsCount, int) or knotsCount < 0:
+            msg = "knotsCount must be non-negative integer"
+            raise ValueError(msg)
+        if leftBoundary > rightBoundary:
+            msg = "leftBoundary must be less than or equal to rightBoundary"
+            raise ValueError(msg)
+        if downBoundary > upBoundary:
+            msg = "downBoundary must be less than or equal to upBoundary"
+            raise ValueError(msg)
+
+        knotsX = np.random.choice(range(leftBoundary, rightBoundary), size=knotsCount)
+        knotsY = np.random.choice(range(downBoundary, upBoundary), size=knotsCount)
+        return list(zip(knotsX, knotsY, strict=False))
+
+    def generatePoints(self, knots):
+        """Generates bezier curve points on a curve, according to the internal knots passed as parameter."""
+        if not is_list_of_points(knots):
+            msg = "knots must be valid list of points"
+            raise ValueError(msg)
+
+        midPtsCnt = max(abs(self.fromPoint[0] - self.toPoint[0]), abs(self.fromPoint[1] - self.toPoint[1]), 2)
+        knots = [self.fromPoint, *knots, self.toPoint]
+        return BezierCurve.curvePoints(midPtsCnt, knots)
+
+    def distortPoints(self, points, distortionMean, distortionStdev, distortionFrequency):
+        """Distorts the curve described by (x,y) points, so that the curve is not ideally smooth.
+
+        Distortion happens by randomly, according to normal distribution,
+        adding an offset to some of the points.
+        """
+        if not (isNumeric(distortionMean) and isNumeric(distortionStdev) and isNumeric(distortionFrequency)):
+            msg = "Distortions must be numeric"
+            raise ValueError(msg)
+        if not is_list_of_points(points):
+            msg = "points must be valid list of points"
+            raise ValueError(msg)
+        if not (0 <= distortionFrequency <= 1):
+            msg = "distortionFrequency must be in range [0,1]"
+            raise ValueError(msg)
+
+        distorted = []
+        for i in range(1, len(points) - 1):
+            x, y = points[i]
+            delta = np.random.normal(distortionMean, distortionStdev) if random.random() < distortionFrequency else 0
+            distorted += ((x, y + delta),)
+        return [points[0], *distorted, points[-1]]
+
+    def tweenPoints(self, points, tween, targetPoints):
+        """Chooses a number of points(targetPoints) from the list(points) according to tweening function(tween).
+
+        This function in fact controls the velocity of mouse movement
+        """
+        if not is_list_of_points(points):
+            msg = "points must be valid list of points"
+            raise ValueError(msg)
+        if not isinstance(targetPoints, int) or targetPoints < 2:
+            msg = "targetPoints must be an integer greater or equal to 2"
+            raise ValueError(msg)
+
+        # tween is a function that takes a float 0..1 and returns a float 0..1
+        res = []
+        for i in range(targetPoints):
+            index = int(tween(float(i) / (targetPoints - 1)) * (len(points) - 1))
+            res += (points[index],)
+        return res
+
+
+class mouse:
+    def move(
+        x: int,
+        y: int,
+        absolute: bool = True,
+        randomize: int | tuple[int, int] = 5,
+        delay_factor: tuple[float, float] = (0.2, 0.3),
+    ):
+        from_point = _mouse.get_position()
+        dist = math.dist((x, y), from_point)
+        offsetBoundaryX = max(10, int(0.08 * dist))
+        offsetBoundaryY = max(10, int(0.08 * dist))
+        targetPoints = min(6, max(3, int(0.004 * dist)))
+        if not absolute:
+            x = from_point[0] + x
+            y = from_point[1] + y
+
+        if isinstance(randomize, int):
+            randomize = int(randomize)
+            if randomize > 0:
+                x = int(x) + random.randrange(-randomize, +randomize)
+                y = int(y) + random.randrange(-randomize, +randomize)
+        else:
+            randomize = (int(randomize[0]), int(randomize[1]))
+            if randomize[1] > 0 and randomize[0] > 0:
+                x = int(x) + random.randrange(-randomize[0], +randomize[0])
+                y = int(y) + random.randrange(-randomize[1], +randomize[1])
+
+        human_curve = HumanCurve(
+            from_point,
+            (x, y),
+            offsetBoundaryX=offsetBoundaryX,
+            offsetBoundaryY=offsetBoundaryY,
+            targetPoints=targetPoints,
+        )
+
+        duration = min(0.3, max(0.05, dist * 0.0004) * random.uniform(delay_factor[0], delay_factor[1]))
+        delta = duration / len(human_curve.points)
+
+        for point in human_curve.points:
+            _mouse.move(point[0], point[1], duration=delta)
+        time.sleep(0.05)
+
+    @staticmethod
+    def _is_clicking_safe():
+        return True
+
+    @staticmethod
+    def click(button):
+        if button != "left" or mouse._is_clicking_safe():
+            _mouse.click(button)
+
+    @staticmethod
+    def get_position():
+        return _mouse.get_position()
