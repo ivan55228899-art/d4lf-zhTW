@@ -220,7 +220,7 @@ jobs:
             echo "### 安裝方式"
             echo "1. 下載下方 \`d4lf_zhTW_${{ steps.tag.outputs.tag }}.zip\`"
             echo "2. 解壓到任意資料夾"
-            echo "3. 把 \`saapi64.dll\` 複製到 Diablo IV 安裝目錄,執行 \`sign_dll.ps1\` 簽署"
+            echo "3. 解壓後在資料夾右鍵以系統管理員身分執行 \`install_dll.cmd\`(自動偵測 D4 + 簽署 DLL)"
             echo "4. 確認 D4 客戶端設成繁體中文"
             echo "5. 執行 \`d4lf.exe\`"
             echo ""
