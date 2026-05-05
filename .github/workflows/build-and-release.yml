@@ -151,9 +151,9 @@ jobs:
         shell: bash
         run: |
           UV="${{ needs.sync-and-generate.outputs.upstream_version }}"
-          TAG="v${UV}-zh.${{ github.run_number }}"
+          TAG="v${UV}+zh.${{ github.run_number }}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-          echo "version_for_init=${UV}-zh.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "version_for_init=${UV}+zh.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
       - name: Bake fork repo info into autoupdater
         shell: bash
