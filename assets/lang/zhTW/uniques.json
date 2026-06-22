@@ -281,6 +281,9 @@
     "布卡蘭尼的意志": {
         "num_inherents": 0
     },
+    "布卡蘭尼的決心": {
+        "num_inherents": 0
+    },
     "布卡蘭尼的足靴": {
         "num_inherents": 0
     },
@@ -393,7 +396,7 @@
         "num_inherents": 0
     },
     "正義之劍艾德魯因": {
-        "num_inherents": 1
+        "num_inherents": 0
     },
     "死亡帕凡舞": {
         "num_inherents": 0
@@ -423,7 +426,7 @@
         "num_inherents": 0
     },
     "泰瑞爾之力": {
-        "num_inherents": 1
+        "num_inherents": 0
     },
     "洛克蘭的護符": {
         "num_inherents": 0
@@ -840,7 +843,7 @@
         "num_inherents": 0
     },
     "高祖": {
-        "num_inherents": 1
+        "num_inherents": 0
     },
     "鬥技者之詐": {
         "num_inherents": 0
